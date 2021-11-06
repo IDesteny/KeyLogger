@@ -5,6 +5,8 @@ VisualStudioVersion = 16.0.31702.278
 MinimumVisualStudioVersion = 10.0.40219.1
 Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "KeyLogger", "KeyLogger\KeyLogger.vcxproj", "{0279459A-6F71-4833-B8EC-5BEB193879D1}"
 EndProject
+Project("{8BC9CEB8-8B4A-11D0-8D11-00A0C91BC942}") = "KeyLoggerClient", "KeyLoggerClient\KeyLoggerClient.vcxproj", "{06862BE3-BF4C-4D19-9167-6E4836EE4478}"
+EndProject
 Global
 	GlobalSection(SolutionConfigurationPlatforms) = preSolution
 		Debug|x64 = Debug|x64
@@ -13,9 +15,8 @@ Global
 		Release|x86 = Release|x86
 	EndGlobalSection
 	GlobalSection(ProjectConfigurationPlatforms) = postSolution
-		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x64.ActiveCfg = Debug|Win32
-		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x64.Build.0 = Debug|Win32
-		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x64.Deploy.0 = Debug|Win32
+		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x64.ActiveCfg = Debug|x64
+		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x64.Build.0 = Debug|x64
 		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x86.ActiveCfg = Debug|Win32
 		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x86.Build.0 = Debug|Win32
 		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Debug|x86.Deploy.0 = Debug|Win32
@@ -25,6 +26,14 @@ Global
 		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Release|x86.ActiveCfg = Release|Win32
 		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Release|x86.Build.0 = Release|Win32
 		{0279459A-6F71-4833-B8EC-5BEB193879D1}.Release|x86.Deploy.0 = Release|Win32
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Debug|x64.ActiveCfg = Debug|x64
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Debug|x64.Build.0 = Debug|x64
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Debug|x86.ActiveCfg = Debug|Win32
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Debug|x86.Build.0 = Debug|Win32
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Release|x64.ActiveCfg = Release|x64
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Release|x64.Build.0 = Release|x64
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Release|x86.ActiveCfg = Release|Win32
+		{06862BE3-BF4C-4D19-9167-6E4836EE4478}.Release|x86.Build.0 = Release|Win32
 	EndGlobalSection
 	GlobalSection(SolutionProperties) = preSolution
 		HideSolutionNode = FALSE

