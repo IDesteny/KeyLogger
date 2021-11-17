@@ -14,6 +14,7 @@ UnloadRoutine(
 {
 	PDEVICE_EXTENSION pDeviceExtension = pDriverObject->DeviceObject->DeviceExtension;
 
+	IoDeleteSymbolicLink(&pDeviceExtension->symbolicLinkName);
 	IoDetachDevice(pDeviceExtension->pTargetDeviceObject);
 	IoDeleteDevice(pDriverObject->DeviceObject);
 }
@@ -51,8 +52,6 @@ HookCompletionRoutine(
 
 	return pIrp->IoStatus.Status;
 }
-
-
 
 NTSTATUS
 HookRoutine(
@@ -93,25 +92,21 @@ DeviceControlRoutine(
 	PDEVICE_OBJECT pDeviceObject,
 	PIRP pIrp)
 {
-	UNREFERENCED_PARAMETER(pDeviceObject);
-
+	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
 	PIO_STACK_LOCATION pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
 	ULONG controlCode = pIrpStack->Parameters.DeviceIoControl.IoControlCode;
-	NTSTATUS exitCode = STATUS_SUCCESS;
 	ULONG bytesSnd = 0;
 
 	switch (controlCode)
 	{
 		case GET_KEY:
 		{
+			//KeWaitForMutexObject(&pDeviceExtension->mutex, Executive, KernelMode, FALSE, NULL);
 			break;
 		}
-
-		default:
-			exitCode = STATUS_INVALID_PARAMETER;
 	}
 
-	return CompleteIrp(pIrp, exitCode, bytesSnd);
+	return CompleteIrp(pIrp, STATUS_SUCCESS, bytesSnd);
 }
 
 NTSTATUS
@@ -131,17 +126,21 @@ DriverEntry(
 	NTSTATUS returnedStatus;
 	PDEVICE_OBJECT pDeviceObject;
 
+	UNICODE_STRING deviceName;
+	RtlInitUnicodeString(&deviceName, DEVICE_NAME);
+
 	returnedStatus = IoCreateDevice(
 		pDriverObject,
 		sizeof(DEVICE_EXTENSION),
-		NULL, FILE_DEVICE_KEYBOARD,
+		&deviceName, FILE_DEVICE_KEYBOARD,
 		0, FALSE,
 		&pDeviceObject);
 	
 	if (!NT_SUCCESS(returnedStatus))
 		return returnedStatus;
 
-	pDeviceObject->Flags = DO_BUFFERED_IO;
+	pDeviceObject->Flags |= DO_BUFFERED_IO;
+	pDeviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
 	PZZWSTR symLinks;
 	returnedStatus = IoGetDeviceInterfaces(
@@ -157,8 +156,8 @@ DriverEntry(
 	UNICODE_STRING targetDeviceName;
 	RtlInitUnicodeString(&targetDeviceName, symLinks);
 
-	ExFreePool(symLinks);
 	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
+	ExFreePool(symLinks);
 
 	returnedStatus = IoAttachDevice(
 		pDeviceObject,
@@ -170,6 +169,21 @@ DriverEntry(
 		IoDeleteDevice(pDeviceObject);
 		return returnedStatus;
 	}
+
+	RtlInitUnicodeString(&pDeviceExtension->symbolicLinkName, SYMBOLIC_LINK_NAME);
+
+	returnedStatus = IoCreateSymbolicLink(
+		&pDeviceExtension->symbolicLinkName,
+		&deviceName);
+
+	if (!NT_SUCCESS(returnedStatus))
+	{
+		IoDeleteDevice(pDeviceObject);
+		return returnedStatus;
+	}
+
+	//KeInitializeGuardedMutex(&pDeviceExtension->mutex);
+	//KeAcquireGuardedMutex(&pDeviceExtension->mutex);
 
 	return returnedStatus;
 }
