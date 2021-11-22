@@ -4,7 +4,6 @@
     <ClCompile Include="main.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="deviceExtension.h" />
     <ClInclude Include="ioCtls.h" />
     <ClInclude Include="info.h" />
   </ItemGroup>

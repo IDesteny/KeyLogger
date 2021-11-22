@@ -115,7 +115,6 @@
     <ClCompile Include="main.c" />
   </ItemGroup>
   <ItemGroup>
-    <ClInclude Include="deviceExtension.h" />
     <ClInclude Include="info.h" />
     <ClInclude Include="ioCtls.h" />
   </ItemGroup>
