@@ -175,6 +175,7 @@ DriverEntry(
 	if (!NT_SUCCESS(returnedStatus))
 		return returnedStatus;
 
+	pDeviceObject->Flags |= DO_EXCLUSIVE;
 	pDeviceObject->Flags |= DO_BUFFERED_IO;
 	pDeviceObject->Flags &= ~DO_DEVICE_INITIALIZING;
 
